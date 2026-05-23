@@ -155,13 +155,21 @@ def parse_data(movie: MovieInfo):
     else:
         raise MovieDuplicateError(__name__, movie.dvdid, match_count)
 
-    container = html2.xpath("/html/body/section/div/div[@class='video-detail']")[0]
-    info = container.xpath("//nav[@class='panel movie-panel-info']")[0]
-    title = container.xpath("h2/strong[@class='current-title']/text()")[0]
+    container_tag = html2.xpath("/html/body/section/div/div[@class='video-detail']")
+    if not container_tag:
+        raise WebsiteError(f"JavDB: 无法解析影片详情页，可能页面结构变化或被反爬: '{new_url}'")
+    container = container_tag[0]
+    info_tag = container.xpath("//nav[@class='panel movie-panel-info']")
+    title_tag = container.xpath("h2/strong[@class='current-title']/text()")
+    cover_tag = container.xpath("//img[@class='video-cover']/@src")
+    if not (info_tag and title_tag and cover_tag):
+        raise WebsiteError(f"JavDB: 影片详情页缺少必要字段: '{new_url}'")
+    info = info_tag[0]
+    title = title_tag[0]
     show_orig_title = container.xpath("//a[contains(@class, 'meta-link') and not(contains(@style, 'display: none'))]")
     if show_orig_title:
         movie.ori_title = container.xpath("h2/span[@class='origin-title']/text()")[0]
-    cover = container.xpath("//img[@class='video-cover']/@src")[0]
+    cover = cover_tag[0]
     preview_pics = container.xpath("//a[@class='tile-item'][@data-fancybox='gallery']/@href")
     preview_video_tag = container.xpath("//video[@id='preview-video']/source/@src")
     if preview_video_tag:

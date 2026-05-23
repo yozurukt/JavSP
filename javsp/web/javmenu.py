@@ -25,8 +25,14 @@ def parse_data(movie: MovieInfo):
         raise MovieNotFoundError(__name__, movie.dvdid)
 
     html = resp2html(r)
-    container = html.xpath("//div[@class='col-md-9 px-0']")[0]
-    title = container.xpath("div[@class='col-12 mb-3']/h1/strong/text()")[0]
+    container_tag = html.xpath("//div[@class='col-md-9 px-0']")
+    if not container_tag:
+        raise MovieNotFoundError(__name__, movie.dvdid)
+    container = container_tag[0]
+    title_tag = container.xpath("div[@class='col-12 mb-3']/h1/strong/text()")
+    if not title_tag:
+        raise WebsiteError(f"JavMenu: 影片详情页缺少标题: '{url}'")
+    title = title_tag[0]
     # 竟然还在标题里插广告，真的疯了。要不是我已经写了抓取器，才懒得维护这个破站
     title = title.replace('  | JAV目錄大全 | 每日更新', '')
     title = title.replace(' 免費在線看', '').replace(' 免費AV在線看', '')
@@ -41,9 +47,16 @@ def parse_data(movie: MovieInfo):
         cover_img_tag = container.xpath("//img[@class='lazy rounded']/@data-src")
         if cover_img_tag:
             movie.cover = cover_img_tag[0].strip()
-    info = container.xpath("//div[@class='card-body']")[0]
-    publish_date = info.xpath("div/span[contains(text(), '日期:')]")[0].getnext().text
-    duration = info.xpath("div/span[contains(text(), '時長:')]")[0].getnext().text.replace('分鐘', '')
+    info_tag = container.xpath("//div[@class='card-body']")
+    if not info_tag:
+        raise WebsiteError(f"JavMenu: 影片详情页缺少信息区: '{url}'")
+    info = info_tag[0]
+    publish_date_tag = info.xpath("div/span[contains(text(), '日期:')]")
+    duration_tag = info.xpath("div/span[contains(text(), '時長:')]")
+    if not (publish_date_tag and duration_tag):
+        raise WebsiteError(f"JavMenu: 影片详情页缺少日期或时长: '{url}'")
+    publish_date = publish_date_tag[0].getnext().text
+    duration = duration_tag[0].getnext().text.replace('分鐘', '')
     producer = info.xpath("div/span[contains(text(), '製作:')]/following-sibling::a/span/text()")
     if producer:
         movie.producer = producer[0]
