@@ -30,10 +30,8 @@ jobs:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: 'true'
-
-      - name: Fetch tags
-        run: git fetch --prune --unshallow --tags
 
       - name: Install poetry
         run: pipx install poetry

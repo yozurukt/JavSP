@@ -33,6 +33,8 @@ def scan_movies(root: str) -> List[Movie]:
     small_videos = {}
     ignore_folder_name_pattern = re.compile('|'.join(Cfg().scanner.ignored_folder_name_pattern))
     for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        filenames.sort()
         for name in dirnames.copy():
             if ignore_folder_name_pattern.match(name):
                 dirnames.remove(name)
@@ -140,7 +142,7 @@ def scan_movies(root: str) -> List[Movie]:
         logger.error("下列番号对应多部影片文件且不符合分片规则，已略过整理，请手动处理后重新运行脚本: \n" + msg)
     # 转换数据的组织格式
     movies: List[Movie] = []
-    for avid, files in dic.items():
+    for avid, files in sorted(dic.items()):
         src = guess_av_type(avid)
         if src != 'cid':
             mov = Movie(avid)
