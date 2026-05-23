@@ -295,9 +295,15 @@ def _build_openai_payload(url, model, prompt, texts):
             "input": [
                 {
                     "role": "user",
-                    "content": texts,
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": texts,
+                        }
+                    ],
                 }
             ],
+            "stream": False,
             "temperature": 0,
             "max_output_tokens": OPENAI_TRANSLATION_MAX_TOKENS,
         }

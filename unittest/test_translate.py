@@ -203,9 +203,15 @@ def test_openai_translate_supports_responses_endpoint(monkeypatch):
     assert requests_seen[0]["input"] == [
         {
             "role": "user",
-            "content": "__JAVSP_NAME_0__ の紹介",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "__JAVSP_NAME_0__ の紹介",
+                }
+            ],
         }
     ]
+    assert requests_seen[0]["stream"] is False
     assert "instructions" in requests_seen[0]
     assert "max_output_tokens" in requests_seen[0]
     assert "messages" not in requests_seen[0]
