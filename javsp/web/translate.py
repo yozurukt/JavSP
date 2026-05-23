@@ -21,6 +21,18 @@ from javsp.web.base import read_proxy
 logger = logging.getLogger(__name__)
 
 
+OPENAI_TRANSLATION_SYSTEM_PROMPT = (
+    "Translate the following Japanese paragraph into {to}, while leaving "
+    "non-Japanese text, names, placeholders, or text that does not look like "
+    "Japanese untranslated. Reply with the translated text only, do not add "
+    "any text that is not in the original content. Keep placeholders like "
+    "__JAVSP_NAME_0__ exactly unchanged."
+)
+OPENAI_TRANSLATION_MAX_TOKENS = 1024
+OPENAI_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+OPENAI_RETRY_BASE_DELAY = 1.0
+
+
 def translate_movie_info(info: MovieInfo):
     """根据配置翻译影片信息"""
     # 翻译标题
@@ -108,7 +120,13 @@ def translate(texts, engine: Union[
             err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
     elif engine.name == 'openai':
         try:
-            result = openai_translate(texts, engine.url, engine.api_key, engine.model)
+            result = openai_translate(
+                texts,
+                engine.url,
+                engine.api_key,
+                engine.model,
+                actress=actress,
+            )
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
@@ -219,18 +237,60 @@ def claude_translate(texts, api_key, to="zh_CN"):
         }
     return result
 
-def openai_translate(texts, url: Url, api_key: str, model: str, to="zh_CN"):
-    """使用 OpenAI 翻译文本（默认翻译为简体中文）"""
-    api_url = str(url)
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    data = {
+
+def _openai_error_message(response):
+    try:
+        body = response.json()
+    except ValueError:
+        return response.reason
+
+    if not isinstance(body, dict):
+        return response.reason
+    error = body.get("error")
+    if isinstance(error, dict):
+        return error.get("message") or error.get("code") or response.reason
+    if isinstance(error, str):
+        return error
+    return body.get("message") or body.get("detail") or response.reason
+
+
+def _protect_names(texts, names):
+    protected = {}
+    for name in sorted(set(names or []), key=len, reverse=True):
+        if not name:
+            continue
+        placeholder = f"__JAVSP_NAME_{len(protected)}__"
+        if name in texts:
+            texts = texts.replace(name, placeholder)
+            protected[placeholder] = name
+    return texts, protected
+
+
+def _restore_names(texts, protected):
+    for placeholder, name in protected.items():
+        texts = texts.replace(placeholder, name)
+    return texts
+
+
+def _is_responses_endpoint(url):
+    return str(url).rstrip('/').endswith('/responses')
+
+
+def _build_openai_payload(url, model, prompt, texts):
+    if _is_responses_endpoint(url):
+        return {
+            "model": model,
+            "instructions": prompt,
+            "input": texts,
+            "temperature": 0,
+            "max_output_tokens": OPENAI_TRANSLATION_MAX_TOKENS,
+        }
+
+    return {
          "messages": [
            {
              "role": "system",
-             "content": f"Translate the following Japanese paragraph into {to}, while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content."
+             "content": prompt
            },
            {
              "role": "user",
@@ -239,20 +299,129 @@ def openai_translate(texts, url: Url, api_key: str, model: str, to="zh_CN"):
          ],
          "model": model,
          "temperature": 0,
-         "max_tokens": 1024,
+         "max_tokens": OPENAI_TRANSLATION_MAX_TOKENS,
     }
-    r = requests.post(api_url, headers=headers, json=data)
-    if r.status_code == 200:
-        if 'error' in r.json():
+
+
+def _parse_responses_translation(body):
+    status = body.get("status")
+    if status == "incomplete" or body.get("incomplete_details"):
+        reason = (body.get("incomplete_details") or {}).get("reason")
+        return {
+            "error_code": reason or "incomplete",
+            "error_msg": f"OpenAI translation response was incomplete: {reason}",
+        }
+    if status and status != "completed":
+        return {
+            "error_code": status,
+            "error_msg": f"OpenAI translation stopped unexpectedly: {status}",
+        }
+
+    output_text = body.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    text_parts = []
+    for item in body.get("output") or []:
+        for content in item.get("content") or []:
+            if content.get("type") == "output_text" and content.get("text"):
+                text_parts.append(content["text"])
+    if not text_parts:
+        return {
+            "error_code": "no_output",
+            "error_msg": "OpenAI translation response has no output text",
+        }
+    return ''.join(text_parts).strip()
+
+
+def _parse_chat_completion_translation(body):
+    choices = body.get("choices") or []
+    if not choices:
+        return {
+            "error_code": "no_choices",
+            "error_msg": "OpenAI translation response has no choices",
+        }
+
+    choice = choices[0]
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        return {
+            "error_code": "length",
+            "error_msg": "OpenAI translation response was truncated",
+        }
+    if finish_reason not in (None, "stop"):
+        return {
+            "error_code": finish_reason,
+            "error_msg": f"OpenAI translation stopped unexpectedly: {finish_reason}",
+        }
+    return choice.get("message", {}).get("content", "").strip()
+
+
+def openai_translate(texts, url: Url, api_key: str, model: str, to="zh_CN", actress=None):
+    """使用 OpenAI 翻译文本（默认翻译为简体中文）"""
+    api_url = str(url)
+    protected_texts, protected_names = _protect_names(texts, actress)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    data = _build_openai_payload(
+        api_url,
+        model,
+        OPENAI_TRANSLATION_SYSTEM_PROMPT.format(to=to),
+        protected_texts,
+    )
+    retry = max(1, Cfg().network.retry)
+    timeout = Cfg().network.timeout.total_seconds()
+    result = None
+    for cnt in range(retry):
+        try:
+            r = requests.post(api_url, headers=headers, json=data, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            if cnt < retry - 1:
+                logger.debug(f"OpenAI翻译请求失败，正在重试 ({cnt+1}/{retry}): {repr(e)}")
+                time.sleep(OPENAI_RETRY_BASE_DELAY * (cnt + 1))
+                continue
+            result = {
+                "error_code": -1,
+                "error_msg": repr(e),
+            }
+            break
+
+        if r.status_code != 200:
+            error_msg = _openai_error_message(r)
+            if r.status_code in OPENAI_RETRY_STATUS_CODES and cnt < retry - 1:
+                logger.debug(
+                    f"OpenAI翻译HTTP {r.status_code}: {error_msg}，"
+                    f"正在重试 ({cnt+1}/{retry})"
+                )
+                time.sleep(OPENAI_RETRY_BASE_DELAY * (cnt + 1))
+                continue
+            result = {"error_code": r.status_code, "error_msg": error_msg}
+            break
+
+        try:
+            body = r.json()
+        except ValueError:
+            result = {"error_code": r.status_code, "error_msg": "Invalid JSON response"}
+            break
+
+        if not isinstance(body, dict):
+            result = {"error_code": r.status_code, "error_msg": "Invalid JSON response"}
+            break
+
+        if body.get('error'):
             result = {
                 "error_code": r.status_code,
-                "error_msg": r.json().get("error", {}).get("message", ""),
+                "error_msg": _openai_error_message(r),
             }
+            break
+
+        if _is_responses_endpoint(api_url):
+            result = _parse_responses_translation(body)
         else:
-            result = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    else:
-        result = {
-            "error_code": r.status_code,
-            "error_msg": r.reason,
-        }
+            result = _parse_chat_completion_translation(body)
+        if isinstance(result, str):
+            result = _restore_names(result, protected_names)
+        break
     return result
