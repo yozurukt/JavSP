@@ -200,7 +200,12 @@ def test_openai_translate_supports_responses_endpoint(monkeypatch):
     )
 
     assert result == "葵つかさ 的翻译"
-    assert requests_seen[0]["input"] == "__JAVSP_NAME_0__ の紹介"
+    assert requests_seen[0]["input"] == [
+        {
+            "role": "user",
+            "content": "__JAVSP_NAME_0__ の紹介",
+        }
+    ]
     assert "instructions" in requests_seen[0]
     assert "max_output_tokens" in requests_seen[0]
     assert "messages" not in requests_seen[0]
@@ -228,3 +233,27 @@ def test_openai_translate_detects_incomplete_responses_response(monkeypatch):
     )
 
     assert result["error_code"] == "max_output_tokens"
+
+
+def test_translate_error_does_not_include_openai_api_key(monkeypatch):
+    engine = translate_mod.OpenAITranslateEngine(
+        name="openai",
+        url="https://api.example.test/v1/responses",
+        api_key="secret-token",
+        model="model",
+    )
+
+    monkeypatch.setattr(
+        translate_mod,
+        "openai_translate",
+        lambda *args, **kwargs: {
+            "error_code": 400,
+            "error_msg": "bad request",
+        },
+    )
+
+    result = translate_mod.translate("本文", engine)
+
+    assert "secret-token" not in result["error"]
+    assert "api_key" not in result["error"]
+    assert "https://api.example.test/v1/responses" in result["error"]

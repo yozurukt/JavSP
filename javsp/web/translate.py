@@ -33,6 +33,17 @@ OPENAI_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 OPENAI_RETRY_BASE_DELAY = 1.0
 
 
+def _describe_translate_engine(engine):
+    parts = [f"name={engine.name!r}"]
+    if hasattr(engine, 'url'):
+        parts.append(f"url={str(engine.url)!r}")
+    if hasattr(engine, 'model'):
+        parts.append(f"model={engine.model!r}")
+    if hasattr(engine, 'app_id'):
+        parts.append(f"app_id={engine.app_id!r}")
+    return ' '.join(parts)
+
+
 def translate_movie_info(info: MovieInfo):
     """根据配置翻译影片信息"""
     # 翻译标题
@@ -85,7 +96,7 @@ def translate(texts, engine: Union[
             paragraphs = [i['dst'] for i in result['trans_result']]
             rtn = {'trans': '\n'.join(paragraphs)}
         else:
-            err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+            err_msg = "{}: {}: {}".format(_describe_translate_engine(engine), result['error_code'], result['error_msg'])
     elif engine.name == 'bing':
         # 使用动态词典保护原文中的女优名，防止翻译后认不出来
         for i in actress:
@@ -108,16 +119,16 @@ def translate(texts, engine: Union[
             trans = ''.join(trans_break)
             rtn = {'trans': trans, 'orig_break': orig_break, 'trans_break': trans_break}
         else:
-            err_msg = "{}: {}: {}".format(engine, result['error']['code'], result['error']['message'])
+            err_msg = "{}: {}: {}".format(_describe_translate_engine(engine), result['error']['code'], result['error']['message'])
     elif engine.name == 'claude':
         try:
             result = claude_translate(texts, engine.api_key)
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+                err_msg = "{}: {}: {}".format(_describe_translate_engine(engine), result['error_code'], result['error_msg'])
         except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
+            err_msg = "{}: {}: Exception: {}".format(_describe_translate_engine(engine), -2, repr(e))
     elif engine.name == 'openai':
         try:
             result = openai_translate(
@@ -130,9 +141,9 @@ def translate(texts, engine: Union[
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+                err_msg = "{}: {}: {}".format(_describe_translate_engine(engine), result['error_code'], result['error_msg'])
         except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
+            err_msg = "{}: {}: Exception: {}".format(_describe_translate_engine(engine), -2, repr(e))
     elif engine.name == 'google':
         try:
             result = google_trans(texts)
@@ -144,9 +155,9 @@ def translate(texts, engine: Union[
                 trans = ''.join(trans_break)
                 rtn = {'trans': trans, 'orig_break': orig_break, 'trans_break': trans_break}
             else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+                err_msg = "{}: {}: {}".format(_describe_translate_engine(engine), result['error_code'], result['error_msg'])
         except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
+            err_msg = "{}: {}: Exception: {}".format(_describe_translate_engine(engine), -2, repr(e))
     else:
         return {'trans': texts}
 
@@ -281,7 +292,12 @@ def _build_openai_payload(url, model, prompt, texts):
         return {
             "model": model,
             "instructions": prompt,
-            "input": texts,
+            "input": [
+                {
+                    "role": "user",
+                    "content": texts,
+                }
+            ],
             "temperature": 0,
             "max_output_tokens": OPENAI_TRANSLATION_MAX_TOKENS,
         }
